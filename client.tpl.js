@@ -40,6 +40,9 @@ window.__ModuleLoader__.load({
       freeY: 0.84,
       locked: false,
       gazeFollow: true,
+      gazeStrength: 1.3,
+      wander: true,
+      hoverShy: true,
       sleepMin: 10,
     };
 
@@ -50,15 +53,46 @@ window.__ModuleLoader__.load({
       { id: "tl", label: "左上" },
     ];
 
-    var PRESETS = [
-      { id: "02", label: "待机" },
-      { id: "30", label: "思考" },
-      { id: "31", label: "接收" },
-      { id: "32", label: "处理" },
-      { id: "33", label: "完成" },
-      { id: "34", label: "出错" },
-      { id: "35", label: "等待" },
-      { id: "00", label: "睡眠" },
+    var GROUPS = [
+      { key: "life", label: "生命周期", hint: "自己会到的状态" },
+      { key: "emotion", label: "情绪反应", hint: "干活顺手/碰坑时的反应" },
+      { key: "agent", label: "代理工作状态", hint: "DSH 事件直接驱动" },
+    ];
+
+    // 上游 emotion-ball 的完整 32 套（编号即对外契约，不可重排）
+    var EMOTIONS = [
+      { id: "00", label: "睡眠", g: "life" },
+      { id: "01", label: "唤醒", g: "life" },
+      { id: "02", label: "待机", g: "life" },
+      { id: "03", label: "好奇", g: "life" },
+      { id: "04", label: "发呆", g: "life" },
+      { id: "05", label: "加载苏醒", g: "life" },
+      { id: "06", label: "休眠", g: "life" },
+      { id: "07", label: "抖动唤醒", g: "life" },
+      { id: "10", label: "开心", g: "emotion" },
+      { id: "11", label: "疑惑", g: "emotion" },
+      { id: "12", label: "失落", g: "emotion" },
+      { id: "13", label: "惊讶", g: "emotion" },
+      { id: "14", label: "害羞", g: "emotion" },
+      { id: "15", label: "疲惫", g: "emotion" },
+      { id: "16", label: "专注", g: "emotion" },
+      { id: "17", label: "慌张", g: "emotion" },
+      { id: "18", label: "无奈", g: "emotion" },
+      { id: "19", label: "满意", g: "emotion" },
+      { id: "20", label: "困惑", g: "emotion" },
+      { id: "21", label: "生气", g: "emotion" },
+      { id: "30", label: "思考中", g: "agent" },
+      { id: "31", label: "接收任务", g: "agent" },
+      { id: "32", label: "处理中", g: "agent" },
+      { id: "33", label: "完成", g: "agent" },
+      { id: "34", label: "出错", g: "agent" },
+      { id: "35", label: "等待输入", g: "agent" },
+      { id: "36", label: "联网加载", g: "agent" },
+      { id: "37", label: "复述回忆", g: "agent" },
+      { id: "38", label: "拒绝受限", g: "agent" },
+      { id: "39", label: "输出回复", g: "agent" },
+      { id: "40", label: "检索资料", g: "agent" },
+      { id: "41", label: "停止终止", g: "agent" },
     ];
 
     function log() {
@@ -90,6 +124,9 @@ window.__ModuleLoader__.load({
       s.showTip = s.showTip !== false;
       s.locked = !!s.locked;
       s.gazeFollow = s.gazeFollow !== false;
+      s.gazeStrength = clampNum(s.gazeStrength, 0.2, 3, 1.3);
+      s.wander = s.wander !== false;
+      s.hoverShy = s.hoverShy !== false;
       return s;
     }
 
@@ -177,6 +214,9 @@ window.__ModuleLoader__.load({
         idle: { standbyAfter: 60000, sleepAfter: sleepAfterMs, standbyId: "02", sleepId: "00" },
         shape: "blob",
       });
+      try {
+        window.__aoraBall = ball;
+      } catch (e) {}
 
       var tipTimer = null;
       ball.on("tips", function (e) {
@@ -244,31 +284,65 @@ window.__ModuleLoader__.load({
 
       layout(cfg);
 
-      // ── 鼠标注视：以视口中心为参照，指针偏移归一化到 [-1,1]
+      // ── 鼠标注视 ──────────────────────────────────────────
+      // 上游 setGaze 把幅度钉在 ±24/±15（viewBox 289）且会 clamp 入参，
+      // 148px 显示下实际只有 6~12px 位移，几乎看不出来 —— 所以直接写 _gaze 目标值，
+      // 幅度 × 强度。眼球跑到眼眶外前有 1.5 倍余量，默认 1.3 实测不越界。
       var gazeIdleAt = 0;
+      var gazeHits = 0;
+      var lastGX = 0;
+      var lastGY = 0;
+      var gazeCenter = null;
+      var gazeCenterAt = 0;
+      function applyGaze(nx, ny) {
+        var st = clampNum(cfg.gazeStrength, 0.2, 3, 1.3);
+        var cx = Math.max(-1, Math.min(1, nx));
+        var cy = Math.max(-1, Math.min(1, ny));
+        lastGX = cx;
+        lastGY = cy;
+        try {
+          if (ball && ball._gaze) {
+            ball._gaze.tx = cx * 24 * st;
+            ball._gaze.ty = cy * 15 * st;
+          } else if (ball && typeof ball.setGaze === "function") {
+            ball.setGaze(cx, cy);
+          }
+        } catch (e) {}
+      }
       function gaze(ev) {
-        if (!cfg.gazeFollow) return;
         if (!ev || typeof ev.clientX !== "number") return;
-        var vw = window.innerWidth || 1280;
-        var vh = window.innerHeight || 800;
-        var nx = (ev.clientX - vw / 2) / (vw / 2);
-        var ny = (ev.clientY - vh / 2) / (vh / 2);
-        ball.setGaze(Math.max(-1, Math.min(1, nx)), Math.max(-1, Math.min(1, ny)));
-        /* 没在干活时被鼠标「叫醒」：睡着或轮到了别的表情，都把目光交回指针 */
-        if (!cfg.follow || !busy) {
-          var nowMs = Date.now();
-          if (nowMs - gazeIdleAt > 450) {
-            gazeIdleAt = nowMs;
-            if (ball.emotionId && ball.emotionId !== "02") {
-              ball.setEmotion("02", { auto: true });
-              lastKey = "";
-            }
+        gazeHits += 1;
+        if (!cfg.gazeFollow) return;
+        /* 以球心为参照，而不是视口中心 —— 球在右下角时，以视口中心算出来的
+           偏移永远偏向同一侧，看起来就像没在跟。除以短边 35% 当满幅，
+           鼠标从球左边滑到右边就能看到眼珠左右看。 */
+        var nowT = Date.now();
+        if (!gazeCenter || nowT - gazeCenterAt > 150) {
+          try {
+            var rc = root.getBoundingClientRect();
+            gazeCenter = { x: rc.left + rc.width / 2, y: rc.top + rc.height / 2 };
+            gazeCenterAt = nowT;
+          } catch (e) {
+            gazeCenter = { x: (window.innerWidth || 1280) / 2, y: (window.innerHeight || 800) / 2 };
+          }
+        }
+        var lim = Math.min(window.innerWidth || 1280, window.innerHeight || 800) * 0.35 || 280;
+        applyGaze((ev.clientX - gazeCenter.x) / lim, (ev.clientY - gazeCenter.y) / lim);
+        /* 只有真睡着/休眠才被鼠标「叫醒」，其余状态一律不动表情 ——
+           之前每 450ms 就把表情重置回待机，过渡动画不断重播，看上去像注视卡住 */
+        var nowMs = Date.now();
+        if (nowMs - gazeIdleAt > 1200) {
+          gazeIdleAt = nowMs;
+          var cur = String((ball && ball.emotionId) || "");
+          if (cur === "00" || cur === "06") {
+            try { ball.setEmotion("01", { auto: true }); } catch (e) {}
+            lastKey = "";
           }
         }
         if (gazeTimer) clearTimeout(gazeTimer);
         gazeTimer = setTimeout(function () {
-          try { ball.clearGaze(); } catch (e) {}
-        }, 2600);
+          try { ball.setGaze(0, 0); } catch (e) {}
+        }, 8000);
       }
       window.addEventListener("pointermove", gaze, { passive: true });
       // ── 状态轮询
@@ -276,6 +350,9 @@ window.__ModuleLoader__.load({
       var busy = false;
       var gazeTimer = null;
       var alive = true;
+      var mountAt = Date.now();
+      var lastEventAt = Date.now();
+      var wanderTimer = null;
       function apply(state) {
         busy = !!(state && state.emotionId && String(state.emotionId) !== "02");
         if (!cfg.follow) return;
@@ -283,6 +360,7 @@ window.__ModuleLoader__.load({
         var key = String(state.emotionId) + "|" + (state.tips || "");
         if (key === lastKey) return;
         lastKey = key;
+        lastEventAt = Date.now();
         ball.handleAIMessage({ emotionId: String(state.emotionId), tips: state.tips || "" });
       }
       function poll() {
@@ -296,6 +374,41 @@ window.__ModuleLoader__.load({
       }
       var timer = setInterval(poll, POLL);
       poll();
+
+      // ── 生命周期：加载苏醒 → 待机；空闲溜达；久战疲惫 ────
+      try { ball.setEmotion("05", { auto: true }); } catch (e) {}
+      setTimeout(function () {
+        try { ball.setEmotion("02", { auto: true }); } catch (e) {}
+      }, 1700);
+
+      var wanderIds = ["02", "03", "04"];
+      function scheduleWander() {
+        if (wanderTimer) clearTimeout(wanderTimer);
+        wanderTimer = setTimeout(function () {
+          wanderTimer = null;
+          try {
+            var cur = String((ball && ball.emotionId) || "02");
+            var idle = Date.now() - lastEventAt;
+            if (cfg.wander && !busy && idle > 6000 && wanderIds.indexOf(cur) >= 0) {
+              var pickId = wanderIds[Math.floor(Math.random() * wanderIds.length)];
+              if (pickId !== cur) ball.setEmotion(pickId, { auto: true });
+            }
+          } catch (e) {}
+          scheduleWander();
+        }, 8000 + Math.random() * 8000);
+      }
+      scheduleWander();
+
+      // 连续干活超 40 分钟且还在动 → 疲惫（每 40 分钟最多一次）
+      var tiredAt = 0;
+      setInterval(function () {
+        var nowMs = Date.now();
+        var working = nowMs - lastEventAt < 120000;
+        if (cfg.follow && working && nowMs - mountAt > 2400000 && nowMs - tiredAt > 2400000) {
+          tiredAt = nowMs;
+          try { ball.setEmotion("15", { auto: true }); } catch (e) {}
+        }
+      }, 60000);
 
       // ── 自由拖动 + 固定位置 ───────────────────────────────
       var pinBtn = document.createElement("button");
@@ -319,13 +432,28 @@ window.__ModuleLoader__.load({
         writeSettings({ locked: !readSettings().locked });
       });
 
+      // 鼠标在球上停留 3 秒 → 害羞（只是看一眼那种黏糊感，不抢工作状态）
+      var shyTimer = null;
       stage.addEventListener("pointerenter", function () {
         pinBtn.__hover = 1;
         pinBtn.style.opacity = "1";
+        if (!cfg.hoverShy) return;
+        if (shyTimer) clearTimeout(shyTimer);
+        shyTimer = setTimeout(function () {
+          shyTimer = null;
+          try {
+            if (busy) return;
+            var cur = String((ball && ball.emotionId) || "");
+            if (cur === "00" || cur === "06" || cur === "05") return;
+            ball.setEmotion("14", { auto: true });
+            lastKey = "";
+          } catch (e) {}
+        }, 3000);
       });
       stage.addEventListener("pointerleave", function () {
         pinBtn.__hover = 0;
         updatePin(readSettings());
+        if (shyTimer) { clearTimeout(shyTimer); shyTimer = null; }
       });
 
       var drag = null;
@@ -433,6 +561,11 @@ window.__ModuleLoader__.load({
       var svcState = react.useState({ ok: null, state: null });
       var svc = svcState[0];
       var setSvc = svcState[1];
+
+      // 表情墙：点哪个就试哪个，高亮跟服务端当前 id
+      var triedState = react.useState("");
+      var tried = triedState[0];
+      var setTried = triedState[1];
 
       react.useEffect(function () {
         var alive = true;
@@ -635,6 +768,42 @@ window.__ModuleLoader__.load({
         }
       );
 
+      var strengthRow = h(
+        "div",
+        { style: row },
+        h(
+          "div",
+          null,
+          h("div", null, "注视强度"),
+          h("div", { style: subStyle }, "上游幅度很含蓄（约 ±8% 球径），调大更明显；2 以上眼珠会顶到眼眶")
+        ),
+        h(
+          "div",
+          { style: { display: "flex", alignItems: "center", gap: "8px" } },
+          h("input", {
+            type: "range",
+            min: "0.2",
+            max: "3",
+            step: "0.1",
+            value: String(cfg.gazeStrength),
+            onChange: function (e) {
+              save({ gazeStrength: Number(e.target.value) });
+            },
+            style: { width: "120px" },
+          }),
+          h("span", { style: { minWidth: "36px", textAlign: "right" } }, Number(cfg.gazeStrength).toFixed(1) + "×")
+        )
+      );
+
+      var wanderRow = toggleRow(
+        "空闲时自己溜达",
+        "没事干时在待机 / 好奇 / 发呆之间换着站，不傻站着",
+        cfg.wander,
+        function (v) {
+          save({ wander: v });
+        }
+      );
+
       var sleepSel = h(
         "select",
         {
@@ -671,29 +840,56 @@ window.__ModuleLoader__.load({
         ),
         sleepSel
       );
-      var presetRow = h(
+      var curId = String((svc && svc.state && svc.state.emotionId) || "");
+      var wallRow = h(
         "div",
         { style: { padding: "4px 0 8px" } },
-        h("div", null, "试表情"),
-        h("div", { style: subStyle }, "点一下球立刻变，不写回设置"),
-        h(
-          "div",
-          { style: { display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" } },
-          PRESETS.map(function (p) {
-            return h(
-              "button",
-              {
-                key: p.id,
-                type: "button",
-                style: btnStyle,
-                onClick: function () {
-                  pushEmotion(p.id, p.label);
-                },
-              },
-              p.label
-            );
-          })
-        )
+        h("div", null, "表情墙 · 全 32 个"),
+        h("div", { style: subStyle }, "点一下球立刻变，不写回设置；蓝框 = 现在脸上的那个"),
+        GROUPS.map(function (grp) {
+          var list = EMOTIONS.filter(function (e) {
+            return e.g === grp.key;
+          });
+          return h(
+            "div",
+            { key: grp.key, style: { marginTop: "10px" } },
+            h(
+              "div",
+              { style: { fontSize: "11px", opacity: 0.62, marginBottom: "6px" } },
+              grp.label + " · " + list.length + " 个 · " + grp.hint
+            ),
+            h(
+              "div",
+              { style: { display: "grid", gridTemplateColumns: "repeat(8, minmax(0, 1fr))", gap: "6px" } },
+              list.map(function (p) {
+                var on = p.id === curId || p.id === tried;
+                return h(
+                  "button",
+                  {
+                    key: p.id,
+                    type: "button",
+                    title: p.id + " " + p.label,
+                    style: Object.assign({}, btnStyle, {
+                      padding: "6px 2px",
+                      fontSize: "11px",
+                      lineHeight: 1.15,
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: "1px",
+                    }, on ? { borderColor: "rgba(120,170,255,.95)", color: "#7aa9ff" } : {}),
+                    onClick: function () {
+                      setTried(p.id);
+                      pushEmotion(p.id, p.label);
+                    },
+                  },
+                  h("span", { style: { opacity: 0.5, fontSize: "10px" } }, p.id),
+                  h("span", null, p.label)
+                );
+              })
+            )
+          );
+        })
       );
 
       var statusText;
@@ -743,9 +939,11 @@ window.__ModuleLoader__.load({
           save({ showTip: v });
         }),
         gazeRow,
+        strengthRow,
+        wanderRow,
         sleepRow,
         h("div", { style: sep }),
-        presetRow,
+        wallRow,
         statusRow,
         h(
           "div",
