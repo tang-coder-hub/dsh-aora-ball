@@ -1,6 +1,6 @@
 {
   "name": "dsh-aora-ball",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": "tang-coder-hub <293740307+tang-coder-hub@users.noreply.github.com>",
   "repository": {
     "type": "git",
@@ -8,7 +8,7 @@
   },
   "homepage": "https://github.com/tang-coder-hub/dsh-aora-ball",
   "license": "MIT",
-  "description": "DSH 界面内表情球 —— Emotion Ball 引擎 + 会话状态驱动（右下角悬浮，随思考/工具/出错/完成变表情）",
+  "description": "DSH 界面内表情球 —— Emotion Ball 引擎 + 会话状态驱动，可拖到任意位置/图钉锁定/空闲时眼睛跟随鼠标",
   "type": "module",
   "main": "index.js",
   "exports": {
