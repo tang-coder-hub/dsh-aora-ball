@@ -2007,6 +2007,12 @@ window.EMOTION_SEED = [
       margin: 18,
       follow: true,
       showTip: true,
+      posMode: "corner",
+      freeX: 0.78,
+      freeY: 0.84,
+      locked: false,
+      gazeFollow: true,
+      sleepMin: 10,
     };
 
     var CORNERS = [
@@ -2040,6 +2046,25 @@ window.EMOTION_SEED = [
       return Math.max(lo, Math.min(hi, n));
     }
 
+    var CORNER_IDS = ["br", "bl", "tr", "tl"];
+
+    /* 设置归一化：读写都走这里，避免两份校验逻辑漂移 */
+    function normalize(s) {
+      s.size = clampNum(s.size, 80, 280, BASE);
+      s.margin = clampNum(s.margin, 0, 80, 18);
+      if (CORNER_IDS.indexOf(s.corner) < 0) s.corner = "br";
+      s.freeX = clampNum(s.freeX, 0, 1, 0.78);
+      s.freeY = clampNum(s.freeY, 0, 1, 0.84);
+      s.sleepMin = clampNum(s.sleepMin, 0, 60, 10);
+      s.posMode = s.posMode === "free" ? "free" : "corner";
+      s.hidden = !!s.hidden;
+      s.follow = s.follow !== false;
+      s.showTip = s.showTip !== false;
+      s.locked = !!s.locked;
+      s.gazeFollow = s.gazeFollow !== false;
+      return s;
+    }
+
     function readSettings() {
       var s = {};
       var k;
@@ -2061,13 +2086,7 @@ window.EMOTION_SEED = [
           if (legacy !== null) s.hidden = legacy === "1";
         } catch (e3) {}
       }
-      s.size = clampNum(s.size, 80, 280, BASE);
-      s.margin = clampNum(s.margin, 0, 80, 18);
-      if (["br", "bl", "tr", "tl"].indexOf(s.corner) < 0) s.corner = "br";
-      s.hidden = !!s.hidden;
-      s.follow = s.follow !== false;
-      s.showTip = s.showTip !== false;
-      return s;
+      return normalize(s);
     }
 
     function writeSettings(patch) {
@@ -2076,15 +2095,7 @@ window.EMOTION_SEED = [
       if (patch) {
         for (k in patch) s[k] = patch[k];
       }
-      s = (function (x) {
-        x.size = clampNum(x.size, 80, 280, BASE);
-        x.margin = clampNum(x.margin, 0, 80, 18);
-        if (["br", "bl", "tr", "tl"].indexOf(x.corner) < 0) x.corner = "br";
-        x.hidden = !!x.hidden;
-        x.follow = x.follow !== false;
-        x.showTip = x.showTip !== false;
-        return x;
-      })(s);
+      s = normalize(s);
       try {
         localStorage.setItem(SET_KEY, JSON.stringify(s));
       } catch (e) {}
@@ -2132,9 +2143,10 @@ window.EMOTION_SEED = [
 
       document.body.appendChild(root);
 
+      var sleepAfterMs = cfg.sleepMin > 0 ? cfg.sleepMin * 60000 : 9e15;
       var ball = window.EmotionBall.create(stage, {
         emotion: "02",
-        idle: true,
+        idle: { standbyAfter: 60000, sleepAfter: sleepAfterMs, standbyId: "02", sleepId: "00" },
         shape: "blob",
       });
 
@@ -2171,7 +2183,17 @@ window.EMOTION_SEED = [
         root.style.bottom = "auto";
         root.style.left = "auto";
         root.style.top = "auto";
-        if (c.corner === "br") {
+        if (c.posMode === "free") {
+          /* 自由模式：freeX/freeY 是球心在视口中的百分比，缩放锚点取中心 */
+          var vw = window.innerWidth || 1280;
+          var vh = window.innerHeight || 800;
+          var half = BASE / 2;
+          var cx = Math.max(0, Math.min(vw, c.freeX * vw));
+          var cy = Math.max(0, Math.min(vh, c.freeY * vh));
+          root.style.left = (cx - half) + "px";
+          root.style.top = (cy - half) + "px";
+          root.style.transformOrigin = "50% 50%";
+        } else if (c.corner === "br") {
           root.style.right = m;
           root.style.bottom = m;
           root.style.transformOrigin = "100% 100%";
@@ -2194,22 +2216,40 @@ window.EMOTION_SEED = [
 
       layout(cfg);
 
-      // ── 鼠标注视：球心为原点把指针位置归一化到 [-1,1]
+      // ── 鼠标注视：以视口中心为参照，指针偏移归一化到 [-1,1]
+      var gazeIdleAt = 0;
       function gaze(ev) {
-        var r = stage.getBoundingClientRect();
-        if (r.width < 1) return;
-        var cx = r.left + r.width / 2;
-        var cy = r.top + r.height / 2;
-        var nx = Math.max(-1, Math.min(1, (ev.clientX - cx) / (r.width * 1.6)));
-        var ny = Math.max(-1, Math.min(1, (ev.clientY - cy) / (r.height * 1.6)));
-        ball.setGaze(nx, ny);
+        if (!cfg.gazeFollow) return;
+        if (!ev || typeof ev.clientX !== "number") return;
+        var vw = window.innerWidth || 1280;
+        var vh = window.innerHeight || 800;
+        var nx = (ev.clientX - vw / 2) / (vw / 2);
+        var ny = (ev.clientY - vh / 2) / (vh / 2);
+        ball.setGaze(Math.max(-1, Math.min(1, nx)), Math.max(-1, Math.min(1, ny)));
+        /* 没在干活时被鼠标「叫醒」：睡着或轮到了别的表情，都把目光交回指针 */
+        if (!cfg.follow || !busy) {
+          var nowMs = Date.now();
+          if (nowMs - gazeIdleAt > 450) {
+            gazeIdleAt = nowMs;
+            if (ball.emotionId && ball.emotionId !== "02") {
+              ball.setEmotion("02", { auto: true });
+              lastKey = "";
+            }
+          }
+        }
+        if (gazeTimer) clearTimeout(gazeTimer);
+        gazeTimer = setTimeout(function () {
+          try { ball.clearGaze(); } catch (e) {}
+        }, 2600);
       }
       window.addEventListener("pointermove", gaze, { passive: true });
-
       // ── 状态轮询
       var lastKey = "";
+      var busy = false;
+      var gazeTimer = null;
       var alive = true;
       function apply(state) {
+        busy = !!(state && state.emotionId && String(state.emotionId) !== "02");
         if (!cfg.follow) return;
         if (!state || !state.emotionId) return;
         var key = String(state.emotionId) + "|" + (state.tips || "");
@@ -2229,6 +2269,76 @@ window.EMOTION_SEED = [
       var timer = setInterval(poll, POLL);
       poll();
 
+      // ── 自由拖动 + 固定位置 ───────────────────────────────
+      var pinBtn = document.createElement("button");
+      pinBtn.type = "button";
+      pinBtn.title = "固定 / 解锁位置";
+      pinBtn.style.cssText =
+        "position:absolute;left:-1px;top:-1px;width:22px;height:22px;padding:0;border:0;border-radius:50%;" +
+        "background:rgba(20,22,26,.55);color:#fff;font:11px/22px system-ui,sans-serif;text-align:center;" +
+        "cursor:pointer;opacity:0;transition:opacity .18s ease;z-index:3;pointer-events:auto";
+      root.appendChild(pinBtn);
+
+      function updatePin(c) {
+        pinBtn.textContent = c.locked ? "\uD83D\uDCCC" : "\uD83D\uDCCD";
+        pinBtn.style.opacity = c.locked || pinBtn.__hover ? "1" : "0";
+      }
+      updatePin(cfg);
+
+      pinBtn.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        pinBtn.__hover = 1;
+        writeSettings({ locked: !readSettings().locked });
+      });
+
+      stage.addEventListener("pointerenter", function () {
+        pinBtn.__hover = 1;
+        pinBtn.style.opacity = "1";
+      });
+      stage.addEventListener("pointerleave", function () {
+        pinBtn.__hover = 0;
+        updatePin(readSettings());
+      });
+
+      var drag = null;
+      stage.addEventListener("pointerdown", function (ev) {
+        if (ev.button !== 0 || ev.target === pinBtn) return;
+        if (readSettings().locked) return;
+        var r = root.getBoundingClientRect();
+        drag = {
+          id: ev.pointerId,
+          dx: ev.clientX - (r.left + r.width / 2),
+          dy: ev.clientY - (r.top + r.height / 2),
+          x0: ev.clientX,
+          y0: ev.clientY,
+          moved: 0,
+        };
+        try { stage.setPointerCapture(ev.pointerId); } catch (e) {}
+      });
+      stage.addEventListener("pointermove", function (ev) {
+        if (!drag || ev.pointerId !== drag.id) return;
+        if (Math.abs(ev.clientX - drag.x0) + Math.abs(ev.clientY - drag.y0) > 3) drag.moved = 1;
+        if (!drag.moved) return;
+        var vw = window.innerWidth || 1280;
+        var vh = window.innerHeight || 800;
+        var cx = Math.max(0, Math.min(vw, ev.clientX - drag.dx));
+        var cy = Math.max(0, Math.min(vh, ev.clientY - drag.dy));
+        cfg.posMode = "free";
+        cfg.freeX = cx / vw;
+        cfg.freeY = cy / vh;
+        layout(cfg);
+        ev.preventDefault();
+      });
+      function endDrag(ev) {
+        if (!drag) return;
+        var moved = drag.moved;
+        try { stage.releasePointerCapture(drag.id); } catch (e) {}
+        drag = null;
+        if (moved) writeSettings({ posMode: "free", freeX: cfg.freeX, freeY: cfg.freeY });
+      }
+      stage.addEventListener("pointerup", endDrag);
+      stage.addEventListener("pointercancel", endDrag);
+
       // ── 显隐快捷：双击 / Alt+B
       function toggle() {
         writeSettings({ hidden: !readSettings().hidden });
@@ -2247,9 +2357,15 @@ window.EMOTION_SEED = [
         cfg = (ev && ev.detail) || readSettings();
         if (cfg.follow) lastKey = "";
         layout(cfg);
+        updatePin(cfg);
+        if (!cfg.gazeFollow) {
+          try { ball.clearGaze(); } catch (e) {}
+        }
       }
       window.addEventListener(SET_EVENT, onSettings);
-
+      window.addEventListener("resize", function () {
+        layout(readSettings());
+      });
       function onEmotion(ev) {
         var d = (ev && ev.detail) || {};
         ball.handleAIMessage({ emotionId: String(d.emotionId || "02"), tips: d.tips || "" });
@@ -2263,6 +2379,7 @@ window.EMOTION_SEED = [
           alive = false;
           clearInterval(timer);
           if (tipTimer) clearTimeout(tipTimer);
+          if (gazeTimer) clearTimeout(gazeTimer);
           window.removeEventListener("pointermove", gaze);
           window.removeEventListener("keydown", onKey);
           window.removeEventListener(SET_EVENT, onSettings);
@@ -2435,7 +2552,97 @@ window.EMOTION_SEED = [
           })
         );
       };
+      var modeBtn = function (id, label) {
+        var active = cfg.posMode === id;
+        return h(
+          "button",
+          {
+            key: id,
+            type: "button",
+            style: Object.assign(
+              {},
+              btnStyle,
+              active ? { borderColor: "rgba(120,170,255,.95)", color: "#7aa9ff" } : {}
+            ),
+            onClick: function () {
+              save({ posMode: id });
+            },
+          },
+          label
+        );
+      };
 
+      var posRow = h(
+        "div",
+        { style: row },
+        h(
+          "div",
+          null,
+          h("div", null, "位置"),
+          h("div", { style: subStyle }, "按住球直接拖到任意位置；也可以让它停靠在四角")
+        ),
+        h(
+          "div",
+          { style: { display: "flex", gap: "6px" } },
+          modeBtn("corner", "四角停靠"),
+          modeBtn("free", "自由拖动")
+        )
+      );
+
+      var lockRow = toggleRow(
+        "固定位置",
+        "锁住当前位置，拖动不再生效（也可以点球左上角的图钉）",
+        cfg.locked,
+        function (v) {
+          save({ locked: v });
+        }
+      );
+
+      var gazeRow = toggleRow(
+        "眼睛跟随鼠标",
+        "没在干活时，目光跟着指针走；睡着或走神也会被叫回来",
+        cfg.gazeFollow,
+        function (v) {
+          save({ gazeFollow: v });
+        }
+      );
+
+      var sleepSel = h(
+        "select",
+        {
+          value: String(cfg.sleepMin),
+          onChange: function (e) {
+            save({ sleepMin: Number(e.target.value) });
+          },
+          style: {
+            font: "inherit",
+            fontSize: "12px",
+            padding: "3px 6px",
+            borderRadius: "6px",
+            border: "1px solid rgba(127,127,127,.45)",
+            background: "transparent",
+            color: "inherit",
+          },
+        },
+        [
+          h("option", { key: "3", value: "3" }, "3 分钟"),
+          h("option", { key: "10", value: "10" }, "10 分钟"),
+          h("option", { key: "30", value: "30" }, "30 分钟"),
+          h("option", { key: "0", value: "0" }, "不睡"),
+        ]
+      );
+
+      var sleepRow = h(
+        "div",
+        { style: row },
+        h(
+          "div",
+          null,
+          h("div", null, "空闲多久去睡觉"),
+          h("div", { style: subStyle }, "睡着后眼睛闭上，鼠标一动就醒（改了重启 DSH 生效）")
+        ),
+        sleepSel
+      );
       var presetRow = h(
         "div",
         { style: { padding: "4px 0 8px" } },
@@ -2496,8 +2703,10 @@ window.EMOTION_SEED = [
           save({ hidden: !v });
         }),
         sizeRow,
-        cornerRow,
-        marginRow,
+        posRow,
+        cfg.posMode === "corner" ? cornerRow : null,
+        cfg.posMode === "corner" ? marginRow : null,
+        lockRow,
         h("div", { style: sep }),
         toggleRow("跟随会话状态", "思考 / 调工具 / 出错 / 完成 自动换表情", cfg.follow, function (v) {
           save({ follow: v });
@@ -2505,13 +2714,15 @@ window.EMOTION_SEED = [
         toggleRow("显示文字提示", "球上方那行小字（如「思考中」）", cfg.showTip, function (v) {
           save({ showTip: v });
         }),
+        gazeRow,
+        sleepRow,
         h("div", { style: sep }),
         presetRow,
         statusRow,
         h(
           "div",
           { style: hint },
-          "双击球 = 隐藏/显示，Alt+B 同理。设置即时生效，不需要重启。"
+          "拖到任意位置后点图钉就能锁住；双击球 = 隐藏/显示，Alt+B 同理。设置即时生效。"
         )
       );
     }
