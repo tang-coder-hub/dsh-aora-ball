@@ -118,4 +118,4 @@ node build.mjs
 ## 许可
 
 * 插件自身代码（`index.js` / `client.tpl.js` / `build.mjs` / `cordis.patch.yml`）：**MIT**，见 [LICENSE](LICENSE)
-* 内联的表情球引擎：上游**非商业免费，商业需授权**；球形角色形象**仅限个人学习研究**，详见 [NOTICE.md](NOTICE.md)
+* 内联的表情球引擎：上游**非商业免费，商业需授权**；球形角色形象**仅限个人学习研究**，详见 [THIRD-PARTY.md](THIRD-PARTY.md)
